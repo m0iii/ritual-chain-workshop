@@ -1,0 +1,49 @@
+{
+  "_format": "hh3-sol-build-info-1",
+  "id": "solc-0_8_24-a94b7f8673f4bee5f0e6eeac649bf86470d30e49",
+  "solcVersion": "0.8.24",
+  "solcLongVersion": "0.8.24+commit.e11b9ed9",
+  "compilerType": "solc",
+  "toolVersions": {
+    "hardhat": "3.9.0"
+  },
+  "userSourceNameMap": {
+    "contracts/PrivacyPreservingBountyJudge.sol": "project/contracts/PrivacyPreservingBountyJudge.sol"
+  },
+  "input": {
+    "language": "Solidity",
+    "settings": {
+      "evmVersion": "shanghai",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "outputSelection": {
+        "*": {
+          "": [
+            "ast"
+          ],
+          "*": [
+            "abi",
+            "evm.bytecode.linkReferences",
+            "evm.bytecode.object",
+            "evm.bytecode.opcodes",
+            "evm.bytecode.sourceMap",
+            "evm.deployedBytecode.immutableReferences",
+            "evm.deployedBytecode.linkReferences",
+            "evm.deployedBytecode.object",
+            "evm.deployedBytecode.opcodes",
+            "evm.deployedBytecode.sourceMap",
+            "evm.methodIdentifiers"
+          ]
+        }
+      },
+      "remappings": []
+    },
+    "sources": {
+      "project/contracts/PrivacyPreservingBountyJudge.sol": {
+        "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\ncontract PrivacyPreservingBountyJudge {\n    uint256 public nextBountyId = 1;\n\n    struct Bounty {\n        address owner;\n        string title;\n        string rubric;\n        uint256 reward;\n        uint256 submissionDeadline;\n        uint256 revealDeadline;\n        bool judged;\n        bool finalized;\n        uint256 winnerIndex;\n    }\n\n    struct Submission {\n        address submitter;\n        bytes32 commitment;\n        string answer;\n        bool revealed;\n        bool exists;\n        bool eligible;\n    }\n\n    mapping(uint256 => Bounty) public bounties;\n    mapping(uint256 => mapping(address => Submission)) public submissions;\n    mapping(uint256 => address[]) public participants;\n    mapping(uint256 => address[]) public revealedParticipants;\n\n    event BountyCreated(\n        uint256 indexed bountyId,\n        address indexed owner,\n        string title,\n        uint256 reward,\n        uint256 submissionDeadline,\n        uint256 revealDeadline\n    );\n\n    event CommitmentSubmitted(\n        uint256 indexed bountyId,\n        address indexed submitter,\n        bytes32 commitment\n    );\n\n    event AnswerRevealed(\n        uint256 indexed bountyId,\n        address indexed submitter,\n        uint256 revealedIndex\n    );\n\n    event JudgingCompleted(\n        uint256 indexed bountyId,\n        bytes llmInput\n    );\n\n    event WinnerFinalized(\n        uint256 indexed bountyId,\n        address indexed winner,\n        uint256 winnerIndex,\n        uint256 reward\n    );\n\n    modifier onlyBountyOwner(uint256 bountyId) {\n        require(bounties[bountyId].owner == msg.sender, \"Only bounty owner\");\n        _;\n    }\n\n    modifier bountyExists(uint256 bountyId) {\n        require(bounties[bountyId].owner != address(0), \"Bounty does not exist\");\n        _;\n    }\n\n    function createBounty(\n        string calldata title,\n        string calldata rubric,\n        uint256 submissionDeadline,\n        uint256 revealDeadline\n    ) external payable returns (uint256 bountyId) {\n        require(msg.value > 0, \"Reward required\");\n        require(submissionDeadline > block.timestamp, \"Invalid submission deadline\");\n        require(revealDeadline > submissionDeadline, \"Invalid reveal deadline\");\n\n        bountyId = nextBountyId++;\n\n        bounties[bountyId] = Bounty({\n            owner: msg.sender,\n            title: title,\n            rubric: rubric,\n            reward: msg.value,\n            submissionDeadline: submissionDeadline,\n            revealDeadline: revealDeadline,\n            judged: false,\n            finalized: false,\n            winnerIndex: 0\n        });\n\n        emit BountyCreated(\n            bountyId,\n            msg.sender,\n            title,\n            msg.value,\n            submissionDeadline,\n            revealDeadline\n        );\n    }\n\n    function submitCommitment(\n        uint256 bountyId,\n        bytes32 commitment\n    ) external bountyExists(bountyId) {\n        Bounty storage bounty = bounties[bountyId];\n\n        require(block.timestamp < bounty.submissionDeadline, \"Submission closed\");\n        require(commitment != bytes32(0), \"Invalid commitment\");\n        require(!submissions[bountyId][msg.sender].exists, \"Already submitted\");\n\n        submissions[bountyId][msg.sender] = Submission({\n            submitter: msg.sender,\n            commitment: commitment,\n            answer: \"\",\n            revealed: false,\n            exists: true,\n            eligible: false\n        });\n\n        participants[bountyId].push(msg.sender);\n\n        emit CommitmentSubmitted(bountyId, msg.sender, commitment);\n    }\n\n    function revealAnswer(\n        uint256 bountyId,\n        string calldata answer,\n        bytes32 salt\n    ) external bountyExists(bountyId) {\n        Bounty storage bounty = bounties[bountyId];\n        Submission storage submission = submissions[bountyId][msg.sender];\n\n        require(block.timestamp >= bounty.submissionDeadline, \"Reveal not started\");\n        require(block.timestamp < bounty.revealDeadline, \"Reveal closed\");\n        require(submission.exists, \"No commitment found\");\n        require(!submission.revealed, \"Already revealed\");\n        require(bytes(answer).length > 0, \"Empty answer\");\n\n        bytes32 computedCommitment = keccak256(\n            abi.encodePacked(answer, salt, msg.sender, bountyId)\n        );\n\n        require(computedCommitment == submission.commitment, \"Invalid reveal\");\n\n        submission.answer = answer;\n        submission.revealed = true;\n        submission.eligible = true;\n\n        revealedParticipants[bountyId].push(msg.sender);\n\n        emit AnswerRevealed(\n            bountyId,\n            msg.sender,\n            revealedParticipants[bountyId].length - 1\n        );\n    }\n\n    function judgeAll(\n        uint256 bountyId,\n        bytes calldata llmInput\n    ) external bountyExists(bountyId) onlyBountyOwner(bountyId) {\n        Bounty storage bounty = bounties[bountyId];\n\n        require(block.timestamp >= bounty.revealDeadline, \"Reveal phase not ended\");\n        require(!bounty.judged, \"Already judged\");\n        require(revealedParticipants[bountyId].length > 0, \"No revealed submissions\");\n\n        bounty.judged = true;\n\n        emit JudgingCompleted(bountyId, llmInput);\n    }\n\n    function finalizeWinner(\n        uint256 bountyId,\n        uint256 winnerIndex\n    ) external bountyExists(bountyId) onlyBountyOwner(bountyId) {\n        Bounty storage bounty = bounties[bountyId];\n\n        require(bounty.judged, \"Judging not complete\");\n        require(!bounty.finalized, \"Already finalized\");\n        require(winnerIndex < revealedParticipants[bountyId].length, \"Invalid winner index\");\n\n        address winner = revealedParticipants[bountyId][winnerIndex];\n        require(winner != address(0), \"Invalid winner\");\n\n        bounty.finalized = true;\n        bounty.winnerIndex = winnerIndex;\n\n        uint256 reward = bounty.reward;\n        bounty.reward = 0;\n\n        (bool success, ) = payable(winner).call{value: reward}(\"\");\n        require(success, \"Reward transfer failed\");\n\n        emit WinnerFinalized(bountyId, winner, winnerIndex, reward);\n    }\n\n    function getParticipantCount(uint256 bountyId) external view returns (uint256) {\n        return participants[bountyId].length;\n    }\n\n    function getRevealedParticipantCount(uint256 bountyId) external view returns (uint256) {\n        return revealedParticipants[bountyId].length;\n    }\n\n    function getRevealedParticipant(\n        uint256 bountyId,\n        uint256 index\n    ) external view returns (address) {\n        require(index < revealedParticipants[bountyId].length, \"Invalid index\");\n        return revealedParticipants[bountyId][index];\n    }\n\n    function getSubmission(\n        uint256 bountyId,\n        address submitter\n    )\n        external\n        view\n        returns (\n            bytes32 commitment,\n            string memory answer,\n            bool revealed,\n            bool eligible\n        )\n    {\n        Submission storage submission = submissions[bountyId][submitter];\n\n        return (\n            submission.commitment,\n            submission.answer,\n            submission.revealed,\n            submission.eligible\n        );\n    }\n}"
+      }
+    }
+  }
+}
